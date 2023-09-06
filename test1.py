@@ -165,4 +165,49 @@ def df_monthly(column_reference):
     # 다 합쳐서 반환
     return df_func_monthly_apply
 
-print(df_monthly('소속부문'))
+
+# ------------------------------------- 전체현황 그래프 제작 ----------------------------------------
+df_total = df_monthly('소속부문').drop(columns=['수료율'])
+# 월별 신청누계 구하고 컬럼명 값으로 지정
+df_total_apply = df_monthly('소속부문').groupby(['월'])['신청누계'].sum().reset_index(name='값')
+# 항목 컬럼 새로 만들고 신청누계로 값 채우기
+df_total_apply['항목'] = '신청누계'
+# 월별 수료누계 구하고 컬럼명 값으로 지정
+df_total_complete = df_monthly('소속부문').groupby(['월'])['수료누계'].sum().reset_index(name='값')
+# 항목 컬럼 새로 만들고 신청누계로 값 채우기
+df_total_complete['항목'] = '수료누계'
+# 신청누계, 수료누계 하비기
+df_pretotal = df_total_apply.append(df_total_complete, ignore_index=True)
+# 월별 IMO신청누계 구하고 컬럼명 값으로 지정
+df_total_imo = df_monthly('소속부문').groupby(['월'])['IMO신청누계'].sum().reset_index(name='값')
+# 항목 컬럼 새로 만들고 IMO신청누계로 값 채우기
+df_total_imo['항목'] = 'IMO신청누계'
+# 신청누계, 수료누계, IMO신청누계 합치기
+df_pretotal = df_pretotal.append(df_total_imo, ignore_index=True)
+
+df_total['값'] = (df_total['수료누계']/df_total['신청누계']*100).round(1)
+# df_total = df_total.drop(columns=['소속부문', '신청누계', '신청인원', '수료인원', '수료누계', 'IMO신청인원', 'IMO신청누계', 'IMO신청률'])
+df_total['항목'] = '수료율'
+df_total = df_total[['월', '값', '항목']]
+df_total = df_pretotal.append(df_total, ignore_index=True)
+print(df_total)
+
+fig_line_total = pl.graph_objs.Figure()
+# Iterate over unique channels and add a trace for each
+for reference in df_total['항목'].unique():
+    line_data = df_total[df_total['항목'] == reference]
+    fig_line_total.add_trace(pl.graph_objs.Scatter(
+        x=line_data['월'],
+        y=line_data['값'],
+        mode='lines+markers',
+        name=reference
+    ))
+# Update the layout
+fig_line_total.update_layout(
+    title='전체현황',
+    xaxis_title='월',
+    yaxis_title='값',
+    legend_title='항목',
+    hovermode='x',
+    template='plotly_white'  # You can choose different templates if you prefer
+)

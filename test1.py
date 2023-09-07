@@ -5,96 +5,86 @@ import pandas as pd
 import streamlit as st
 import plotly as pl
 from datetime import datetime
-import sqlalchemy as sql
+
+####################################################################################################
+###################################     페이지 기본정보 설정     #####################################
+####################################################################################################
+# 페이지 설정
+# emoji : https://www.webfx.com/tools/emoji-cheat-sheet/
+st.set_page_config(
+    page_title="Dashboard",
+    page_icon=":bar_chart:",
+    layout="wide"
+)
+# 메인페이지 타이틀
+st.header(":bar_chart: 인카금융서비스 교육과정 대시보드")
+st.subheader("주요지표현황")
+st.markdown("##")
+st.markdown("---")
 
 ####################################################################################################
 ###############################     출석부 데이터베이스 불러오기     #################################
 ####################################################################################################
 # ------------------------------------- 데이터베이스 호출 --------------------------------------------
-# MySQL 데이터베이스 접속
-db_connection_str = 'mysql+pymysql://freedb_hun2up:u!jZQ7n7g38*$AU@sql.freedb.tech:3306/freedb_incar_edu'
-db_connection = sql.create_engine(db_connection_str)
-# 출석부 테이블과 과정 테이블을 조인
-sql_query = """
-    SELECT c.*, a.*
-    FROM course c
-    JOIN attendance a
-    ON c.course_code = a.course_code
-"""
-# dataframe 생성
-df_database = pd.read_sql(sql_query, con=db_connection)
-# MySQL 데이터베이스 연결 해제
-db_connection.dispose()
+# Read in data from the Google Sheet.
+# Uses st.cache_data to only rerun when the query changes or after 10 min.
+@st.cache_data(ttl=600)
+def load_data(sheets_url):
+    csv_url = sheets_url.replace("/edit#gid=", "/export?format=csv&gid=")
+    return pd.read_csv(csv_url)
 
-# -------------------------------------------- 자료정리 ---------------------------------------------
+df_attend = load_data(st.secrets["attend_url"])
+df_course = load_data(st.secrets["course_url"])
+df_today = load_data(st.secrets("today_url"))
+
+####################################################################################################
+#########################################     자료정리     #########################################
+####################################################################################################
+# ------------------- 교육과정수료현황 테이블 정리 ----------------------------------=
+# '과정코드' 컬럼 부여하기
+df_attend.insert(loc=1, column='과정코드', value=None)
+# '과정코드'를 정리해 봅시다.
+for modify in range(df_attend.shape[0]):
+    df_attend.iloc[modify,1] = df_attend.iloc[modify,2].split(")")[0].replace('(','')
+# '과정명' 컬럼 날리기
+df_attend = df_attend.drop(columns=['번호','과정명','비고'])
+# IMO신청여부를 Y/N 에서 1/0으로 변경
+df_attend['IMO신청여부'] = df_attend['IMO신청여부'].replace({'Y':1, 'N':0})
+# 수료현황 데이터를 숫자로 변환
+df_attend['수료현황'] = pd.to_numeric(df_attend['수료현황'], errors='coerce')
+# '입사연차' 칼럼 추가
+df_attend['입사연차'] = (datetime.now().year%100 + 1 - df_attend['사원번호'].astype(str).str[:2].astype(int, errors='ignore')).apply(lambda x: f'{x}년차')
+# '파트너'가 '인카본사'인 사람도 없애줍시당
+df_attend = df_attend.drop(df_attend[df_attend.iloc[:,4] == '인카본사'].index)
+# ------------------- 과정현황 테이블 정리 ----------------------------------
+# '과정명' 컬럼 날리기
+df_course = df_course.drop(columns=['번호'])
 # JOIN한 dataframe의 전체 row 계산
-num_rows = df_database.shape[0]
+num_rows = df_course.shape[0]
 # course_date column의 날짜 값을 '월' 값으로 변환
 for date_index in range(num_rows):
-    date_object = pd.to_datetime(df_database.at[date_index, 'course_date'])
+    date_object = pd.to_datetime(df_course.at[date_index, '교육일자'], format="%Y. %m. %d")
     month = date_object.month
-    df_database.at[date_index, 'course_date'] = f'{month}월'
-# '입사연차' 칼럼 추가
-df_database['career'] = (datetime.now().year%100 + 1 - df_database['id'].astype(str).str[:2].astype(int, errors='ignore')).apply(lambda x: f'{x}년차')
-# '번호' 컬럼 날리기
-df_database = df_database.drop(columns=['number'])
-# 컬럼 재정렬
-df_database = df_database[['course_code',
-    'course_theme',
-    'course_name',
-    'course_partner',
-    'course_date',
-    'course_line',
-    'course_fee',
-    'course_region',
-    'course_place',
-    'course_capacity',
-    'course_target',
-    'course_code',
-    'channel',
-    'department',
-    'branch',
-    'team',
-    'id',
-    'name',
-    'imo',
-    'attend',
-    'career',
-    'memo']]
-# column 한글로 변환
-df_database.rename(columns={
-    'course_code':'과정코드',
-    'course_theme':'과정분류',
-    'course_name':'과정명',
-    'course_partner':'보험사',
-    'course_date':'월',
-    'course_line':'과정형태',
-    'course_fee':'수강료',
-    'course_region':'지역',
-    'course_place':'교육장소',
-    'course_capacity':'정원',
-    'course_target':'목표인원',
-    'course_code':'과정코드',
-    'channel':'소속부문',
-    'department':'소속총괄',
-    'branch':'소속부서',
-    'team':'파트너',
-    'id':'사원번호',
-    'name':'성명',
-    'imo':'IMO신청여부',
-    'attend':'수료현황',
-    'career':'입사연차',
-    'memo':'비고'}, inplace=True)
-df_database = df_database[df_database['소속부문'] != '마케팅부문']
+    df_course.at[date_index, '교육일자'] = f'{month}월'
+# ------------------- 교육수료현황 테이블 & 과정현황 테이블 병함 ----------------------------------
+df_course['과정코드'] = df_course['과정코드'].astype(str)
+df_attend['과정코드'] = df_attend['과정코드'].astype(str)
+df_database = pd.merge(df_course, df_attend, on=['과정코드'])
+df_database.rename(columns={'교육일자':'월'}, inplace=True)
 
-# IMO신청여부를 Y/N 에서 1/0으로 변경
-df_database['IMO신청여부'] = df_database['IMO신청여부'].replace({'Y':1, 'N':0})
-# 수료현황 데이터를 숫자로 변환
-df_database['수료현황'] = pd.to_numeric(df_database['수료현황'], errors='coerce')
 ####################################################################################################
 ####################################     필요한 함수 정의     #######################################
 ####################################################################################################
+# -------------------------------------- 사이드바 제작 함수 ------------------------------------------
+def func_sidebar(select_dataframe, select_column):
+    return st.sidebar.multiselect(
+        select_column,
+        options=select_dataframe[select_column].unique(),
+        default=select_dataframe[select_column].unique()
+    )
 
+# ----------------------------- 고유값과 누계값을 구해주는 함수 ----------------------------------------
+# 소속부문별 신청인원, 신청누계, 수료인원, 수료누계, 수료율, IMO신청인원, IMO신청누계, IMO신청률
 def df_basic(column_reference):
     # df_database를 '소속부문', '사원번호' 칼럼으로 묶고, 누적개수 구하기
     df_func_basic_apply = df_database.groupby([column_reference,'사원번호']).size().reset_index(name='신청누계')
@@ -127,7 +117,7 @@ def df_basic(column_reference):
         df_for_basic = pd.merge(df_for_basic, df_for_basic_total, on=[column_reference])
         df_func_basic_apply = pd.merge(df_func_basic_apply, df_for_basic, on=[column_reference])
         basic_get_group += 1
-
+        
     # 다 합쳐서 반환
     return df_func_basic_apply
 
@@ -165,49 +155,81 @@ def df_monthly(column_reference):
     # 다 합쳐서 반환
     return df_func_monthly_apply
 
+# ----- Bar Chart 제작 함수 (bar_type : 'Basic Bar Chart'이면 True, 'Grouped Bar Chart'이면 False) -----
+# bar_type: True/False, bar_number_unique: , bar_number_total: , bar_reference: 
+# bar_hexcodes: 차트 색상 지정을 위한 헥스코드 리스트, bar_orders: 차트 항목(축)별 순서 지정을 위한 리스트, list_outside: 'outside'를 항목 개수만큼 넣은 리스트
+def fig_barchart(df, bar_type, bar_number_unique, bar_number_total, bar_reference, bar_title, bar_hexcodes, bar_orders, bar_outsides):
+    # Basic Bar Chart 만들기
+    if bar_type == True :
+        fig_basicbar = pl.graph_objs.Bar(
+            x=df[bar_number_unique],
+            y=df[bar_number_total],
+            width=0.3,
+            name=bar_number_total,
+            text=df[bar_number_unique],
+            marker={'color':bar_hexcodes}, # 여기수정
+            orientation='h'
+        )
+        data_bar_basic = [fig_basicbar]
+        layout_bar_basic = pl.graph_objs.Layout(title=bar_reference,yaxis={'categoryorder':'array', 'categoryarray':bar_orders}) # 여기수정
+        return_bar_basic = pl.graph_objs.Figure(data=data_bar_basic,layout=layout_bar_basic)
+        return_bar_basic.update_traces(textposition=bar_outsides) #여기수정
+        return_bar_basic.update_layout(showlegend=False) 
+        return return_bar_basic
+    # Grouped Bar Chart 만들기
+    else :
+        fig_groupbar1 = pl.graph_objs.Bar(
+            x=df[bar_number_unique],
+            y=df[bar_reference],
+            name=bar_number_unique,
+            text=df[bar_number_unique],
+            marker={'color':'grey'},
+            orientation='h'
+        )
+        fig_groupbar2 = pl.graph_objs.Bar(
+            x=df[bar_number_total],
+            y=df[bar_reference],
+            name=bar_number_total,
+            text=df[bar_number_total],
+            marker={'color':bar_hexcodes}, # 여기수정
+            orientation='h'
+        )
+        data_bar_group = [fig_groupbar1, fig_groupbar2]
+        layout_bar_group = pl.graph_objs.Layout(title=bar_title,yaxis={'categoryorder':'array', 'categoryarray':bar_orders})
+        return_bar_group = pl.graph_objs.Figure(data=data_bar_group,layout=layout_bar_group)
+        return_bar_group.update_traces(textposition=bar_outsides) #여기수정
+        return_bar_group.update_layout(showlegend=False)
+        return return_bar_group
+def fig_linechart(numbers, line_reference, line_title):
+    fig_line = pl.graph_objs.Figure()
+    # Iterate over unique channels and add a trace for each
+    for reference in df_monthly(line_reference)[line_reference].unique():
+        line_data = df_monthly(line_reference)[df_monthly(line_reference)[line_reference] == reference]
+        fig_line.add_trace(pl.graph_objs.Scatter(
+            x=line_data['월'],
+            y=line_data[numbers],
+            mode='lines+markers',
+            name=reference
+        ))
+    # Update the layout
+    fig_line.update_layout(
+        title=line_title,
+        xaxis_title='월',
+        yaxis_title=numbers,
+        legend_title=line_reference,
+        hovermode='x',
+        template='plotly_white'  # You can choose different templates if you prefer
+    )
+    return fig_line
 
-# ------------------------------------- 전체현황 그래프 제작 ----------------------------------------
-df_total = df_monthly('소속부문').drop(columns=['수료율'])
-# 월별 신청누계 구하고 컬럼명 값으로 지정
-df_total_apply = df_monthly('소속부문').groupby(['월'])['신청누계'].sum().reset_index(name='값')
-# 항목 컬럼 새로 만들고 신청누계로 값 채우기
-df_total_apply['항목'] = '신청누계'
-# 월별 수료누계 구하고 컬럼명 값으로 지정
-df_total_complete = df_monthly('소속부문').groupby(['월'])['수료누계'].sum().reset_index(name='값')
-# 항목 컬럼 새로 만들고 신청누계로 값 채우기
-df_total_complete['항목'] = '수료누계'
-# 신청누계, 수료누계 하비기
-df_pretotal = df_total_apply.append(df_total_complete, ignore_index=True)
-# 월별 IMO신청누계 구하고 컬럼명 값으로 지정
-df_total_imo = df_monthly('소속부문').groupby(['월'])['IMO신청누계'].sum().reset_index(name='값')
-# 항목 컬럼 새로 만들고 IMO신청누계로 값 채우기
-df_total_imo['항목'] = 'IMO신청누계'
-# 신청누계, 수료누계, IMO신청누계 합치기
-df_pretotal = df_pretotal.append(df_total_imo, ignore_index=True)
-
-df_total['값'] = (df_total['수료누계']/df_total['신청누계']*100).round(1)
-# df_total = df_total.drop(columns=['소속부문', '신청누계', '신청인원', '수료인원', '수료누계', 'IMO신청인원', 'IMO신청누계', 'IMO신청률'])
-df_total['항목'] = '수료율'
-df_total = df_total[['월', '값', '항목']]
-df_total = df_pretotal.append(df_total, ignore_index=True)
-print(df_total)
-
-fig_line_total = pl.graph_objs.Figure()
-# Iterate over unique channels and add a trace for each
-for reference in df_total['항목'].unique():
-    line_data = df_total[df_total['항목'] == reference]
-    fig_line_total.add_trace(pl.graph_objs.Scatter(
-        x=line_data['월'],
-        y=line_data['값'],
-        mode='lines+markers',
-        name=reference
-    ))
-# Update the layout
-fig_line_total.update_layout(
-    title='전체현황',
-    xaxis_title='월',
-    yaxis_title='값',
-    legend_title='항목',
-    hovermode='x',
-    template='plotly_white'  # You can choose different templates if you prefer
-)
+####################################################################################################
+################################     straemlit 워터마크 숨기기     ##################################
+####################################################################################################
+hide_st_style = """
+                <style>
+                #MainMenu {visibility: hidden;}
+                footer {visibility: hidden;}
+                header {visibility: hidden;}
+                </style>
+                """
+st.markdown(hide_st_style, unsafe_allow_html=True)
